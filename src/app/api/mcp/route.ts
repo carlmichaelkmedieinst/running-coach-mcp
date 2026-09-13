@@ -1,6 +1,7 @@
 import { createMcpHandler } from "mcp-handler";
 import { z } from "zod";
 
+import { withWorkosAuth } from "@/lib/auth/mcpAuth";
 import { getRecentRuns } from "@/lib/intervals/activities";
 import { IntervalsApiError } from "@/lib/intervals/client";
 
@@ -11,8 +12,13 @@ import { IntervalsApiError } from "@/lib/intervals/client";
  * MCP-specific code here only talks to our domain layer
  * (`getRecentRuns`) — it never touches the raw Intervals.icu response
  * shape directly.
+ *
+ * Milestone 2B: the endpoint is protected by WorkOS OAuth (see
+ * `withWorkosAuth` / `src/lib/auth/mcpAuth.ts`). Only a request bearing a
+ * valid, WorkOS-issued access token for the allow-listed single user ever
+ * reaches this handler.
  */
-const handler = createMcpHandler(
+const mcpHandler = createMcpHandler(
   (server) => {
     server.registerTool(
       "get_recent_runs",
@@ -77,5 +83,7 @@ const handler = createMcpHandler(
     },
   }
 );
+
+const handler = withWorkosAuth(mcpHandler);
 
 export { handler as GET, handler as POST };
