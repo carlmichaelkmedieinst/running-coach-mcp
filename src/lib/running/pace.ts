@@ -61,3 +61,42 @@ export function metersToKm(meters: number | null | undefined): number | null {
 
   return meters / 1000;
 }
+
+/**
+ * Below this speed we treat a sample as "stopped/paused" rather than a
+ * real (if very slow) pace — roughly a 55 min/km walk. Prevents absurd
+ * paces like "180:00/km" from a near-zero GPS/speed reading.
+ */
+const MIN_REALISTIC_SPEED_MPS = 0.3;
+
+/**
+ * Above this speed we treat a sample as a GPS/sensor spike rather than a
+ * real sustained pace — faster than 2:00/km (world-class sprint pace),
+ * implausible to sustain for a meaningful running interval.
+ */
+const MAX_REALISTIC_SPEED_MPS = 8.5;
+
+/**
+ * Converts a speed (meters/second) to pace (seconds/km).
+ *
+ * Intervals.icu often exposes speed (e.g. `average_speed`, `gap`, the
+ * `velocity_smooth` stream) rather than a ready-made pace. This is the
+ * single place that conversion happens, so it can guard against zero/
+ * negative/non-finite speeds, paused samples, and GPS spikes consistently
+ * — returning `null` rather than a nonsensical pace in those cases.
+ */
+export function paceSecondsPerKmFromSpeed(
+  speedMetersPerSecond: number | null | undefined
+): number | null {
+  if (
+    speedMetersPerSecond === null ||
+    speedMetersPerSecond === undefined ||
+    !Number.isFinite(speedMetersPerSecond) ||
+    speedMetersPerSecond < MIN_REALISTIC_SPEED_MPS ||
+    speedMetersPerSecond > MAX_REALISTIC_SPEED_MPS
+  ) {
+    return null;
+  }
+
+  return 1000 / speedMetersPerSecond;
+}

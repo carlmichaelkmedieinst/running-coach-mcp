@@ -6,6 +6,8 @@
  * rest of the app (and MCP tools) should depend on instead.
  */
 
+import type { RunningInterval } from "./interval";
+
 /**
  * Minimal shape of an activity as returned by the Intervals.icu
  * `/athlete/{id}/activities` endpoint.
@@ -38,6 +40,21 @@ export interface IntervalsActivity {
   feel: number | null;
   source: string | null;
   decoupling: number | null;
+
+  /**
+   * Intervals.icu's own average power for the activity, when available
+   * (footpod/estimated running power). Only present on the single-activity
+   * detail endpoint, not the activities list.
+   */
+  icu_average_watts?: number | null;
+  icu_weighted_avg_watts?: number | null;
+
+  /**
+   * Which time-series streams this activity actually has recorded data
+   * for (e.g. `["time", "heartrate", "watts", ...]`). Only present on the
+   * single-activity detail endpoint, not the activities list.
+   */
+  stream_types?: string[] | null;
 }
 
 /**
@@ -77,4 +94,18 @@ export interface RunningActivity {
 
   decoupling: number | null;
   source: string | null;
+}
+
+/**
+ * Detailed, single-activity extension of `RunningActivity`: adds the raw
+ * activity type, average power, which streams are available, and all
+ * detected intervals/laps. Returned by `getRunDetails` and the
+ * `get_run_details` MCP tool. Deliberately excludes raw time-series
+ * streams (those are `getRunStreams`'s job) to keep responses small.
+ */
+export interface RunningActivityDetail extends RunningActivity {
+  type: string | null;
+  averagePower: number | null;
+  availableStreams: string[];
+  intervals: RunningInterval[];
 }
