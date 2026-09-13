@@ -2,21 +2,26 @@ import { createMcpHandler } from "mcp-handler";
 import { z } from "zod";
 
 import { withWorkosAuth } from "@/lib/auth/mcpAuth";
+import { getRunDetails } from "@/lib/intervals/activityDetails";
 import { getRecentRuns } from "@/lib/intervals/activities";
 import { IntervalsApiError } from "@/lib/intervals/client";
+import { getRunStreams } from "@/lib/intervals/streams";
 
 /**
  * MCP endpoint (Streamable HTTP transport, via `mcp-handler`).
  *
- * Milestone 1 exposes exactly one, read-only tool: `get_recent_runs`.
- * MCP-specific code here only talks to our domain layer
- * (`getRecentRuns`) — it never touches the raw Intervals.icu response
- * shape directly.
+ * Milestone 1 exposes `get_recent_runs`. Milestone 3A adds two more
+ * read-only tools, `get_run_details` and `get_run_streams`, for analyzing
+ * one specific activity. MCP-specific code here only talks to our domain
+ * layer (`getRecentRuns` / `getRunDetails` / `getRunStreams`) — it never
+ * touches raw Intervals.icu response shapes directly.
  *
  * Milestone 2B: the endpoint is protected by WorkOS OAuth (see
  * `withWorkosAuth` / `src/lib/auth/mcpAuth.ts`). Only a request bearing a
  * valid, WorkOS-issued access token for the allow-listed single user ever
- * reaches this handler.
+ * reaches this handler. All tools registered below — including the two
+ * added in Milestone 3A — inherit this same protection automatically,
+ * since it wraps the whole handler, not individual tools.
  */
 const mcpHandler = createMcpHandler(
   (server) => {
@@ -67,6 +72,101 @@ const mcpHandler = createMcpHandler(
             error instanceof IntervalsApiError || error instanceof Error
               ? error.message
               : "Intervals.icu request failed unexpectedly.";
+
+          return {
+            isError: true,
+            content: [{ type: "text" as const, text: message }],
+          };
+        }
+      }
+    );
+
+    server.registerTool(
+      "get_run_details",
+      {
+        title: "Get run details",
+        description:
+          "Get detailed data and detected intervals for one running activity from Intervals.icu. Use this when analyzing a specific run or its interval structure.",
+        inputSchema: z.object({
+          activityId: z
+            .string()
+            .min(1)
+            .describe('The Intervals.icu activity id, e.g. "i186254951".'),
+        }),
+        annotations: {
+          title: "Get run details",
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
+      },
+      async ({ activityId }) => {
+        try {
+          const detail = await getRunDetails(activityId);
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify(detail, null, 2),
+              },
+            ],
+          };
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Intervals.icu request failed unexpectedly.";
+
+          return {
+            isError: true,
+            content: [{ type: "text" as const, text: message }],
+          };
+        }
+      }
+    );
+
+    server.registerTool(
+      "get_run_streams",
+      {
+        title: "Get run streams",
+        description:
+          "Get normalized time-series data for one running activity, including heart rate, pace, cadence, power and elevation where available. Use this for detailed run analysis such as pacing, heart-rate response and interval analysis.",
+        inputSchema: z.object({
+          activityId: z
+            .string()
+            .min(1)
+            .describe('The Intervals.icu activity id, e.g. "i186254951".'),
+          maxPoints: z
+            .number()
+            .int()
+            .min(100)
+            .max(1000)
+            .default(600)
+            .describe("Maximum number of normalized data points to return (100-1000, default 600)."),
+        }),
+        annotations: {
+          title: "Get run streams",
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
+      },
+      async ({ activityId, maxPoints }) => {
+        try {
+          const streams = await getRunStreams({ activityId, maxPoints });
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify(streams, null, 2),
+              },
+            ],
+          };
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Intervals.icu request failed unexpectedly.";
 
           return {
             isError: true,

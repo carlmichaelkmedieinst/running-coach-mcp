@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { isRunningActivityType, normalizeActivity } from "./normalizers";
+import {
+  buildStreamPoints,
+  isRunningActivityType,
+  normalizeActivity,
+  normalizeActivityDetail,
+  normalizeInterval,
+} from "./normalizers";
 import type { IntervalsActivity } from "@/types/activity";
+import type { IntervalsInterval } from "@/types/interval";
+import type { IntervalsStream } from "@/types/stream";
 
 function makeRawActivity(overrides: Partial<IntervalsActivity> = {}): IntervalsActivity {
   return {
@@ -119,5 +127,223 @@ describe("normalizeActivity", () => {
     expect(result.movingTimeSeconds).toBe(0);
     expect(result.paceSecondsPerKm).toBeNull();
     expect(result.pace).toBeNull();
+  });
+});
+
+function makeRawInterval(overrides: Partial<IntervalsInterval> = {}): IntervalsInterval {
+  return {
+    id: 4857895,
+    type: "WORK",
+    label: null,
+    start_index: 0,
+    end_index: 330,
+    start_time: 0,
+    end_time: 330,
+    distance: 1000,
+    moving_time: 330,
+    elapsed_time: 330,
+    average_heartrate: 141,
+    max_heartrate: 158,
+    average_cadence: 75.3,
+    // Real-world Intervals.icu units: meters/second, not seconds/km.
+    average_speed: 3.03,
+    average_watts: null,
+    total_elevation_gain: 4.2,
+    gap: 3.04,
+    decoupling: null,
+    ...overrides,
+  };
+}
+
+describe("normalizeInterval", () => {
+  it("computes pace from distance + moving time, not from average_speed", () => {
+    const result = normalizeInterval(makeRawInterval({ distance: 1000, moving_time: 330 }));
+
+    // 330s / 1km = 330s/km = 5:30/km — independent of the raw average_speed value.
+    expect(result.paceSecondsPerKm).toBe(330);
+    expect(result.pace).toBe("5:30/km");
+  });
+
+  it("stringifies the numeric interval id", () => {
+    const result = normalizeInterval(makeRawInterval({ id: 4857895 }));
+    expect(result.id).toBe("4857895");
+  });
+
+  it("converts the raw gap (meters/second) into a formatted pace string", () => {
+    // 1000 / 3.04 ≈ 328.9s/km ≈ 5:29/km
+    const result = normalizeInterval(makeRawInterval({ gap: 3.04 }));
+    expect(result.gap).toBe("5:29/km");
+  });
+
+  it("passes through heart rate, cadence, power, elevation, and decoupling", () => {
+    const result = normalizeInterval(
+      makeRawInterval({
+        average_heartrate: 152,
+        max_heartrate: 160,
+        average_cadence: 74.5,
+        average_watts: 250,
+        total_elevation_gain: 11.8,
+        decoupling: 3.1,
+      })
+    );
+
+    expect(result.averageHeartRate).toBe(152);
+    expect(result.maxHeartRate).toBe(160);
+    expect(result.averageCadence).toBe(74.5);
+    expect(result.averagePower).toBe(250);
+    expect(result.elevationGainMeters).toBe(11.8);
+    expect(result.decoupling).toBe(3.1);
+  });
+
+  it("returns null for pace/gap when the required raw fields are missing", () => {
+    const result = normalizeInterval(
+      makeRawInterval({ distance: null, moving_time: null, elapsed_time: null, gap: null })
+    );
+
+    expect(result.paceSecondsPerKm).toBeNull();
+    expect(result.pace).toBeNull();
+    expect(result.gap).toBeNull();
+  });
+
+  it("falls back to elapsed_time when moving_time is missing", () => {
+    const result = normalizeInterval(
+      makeRawInterval({ distance: 1000, moving_time: null, elapsed_time: 300 })
+    );
+
+    expect(result.durationSeconds).toBe(300);
+    expect(result.paceSecondsPerKm).toBe(300);
+  });
+});
+
+describe("normalizeActivityDetail", () => {
+  it("extends normalizeActivity with type, averagePower, availableStreams, and intervals", () => {
+    const rawActivity = makeRawActivity({
+      icu_average_watts: 245,
+      stream_types: ["time", "heartrate", "distance"],
+    });
+    const rawIntervals = [makeRawInterval()];
+
+    const result = normalizeActivityDetail(rawActivity, rawIntervals);
+
+    // Base RunningActivity fields still present (reused from normalizeActivity).
+    expect(result.id).toBe(rawActivity.id);
+    expect(result.distanceKm).toBe(5);
+
+    expect(result.type).toBe("Run");
+    expect(result.averagePower).toBe(245);
+    expect(result.availableStreams).toEqual(["time", "heartrate", "distance"]);
+    expect(result.intervals).toHaveLength(1);
+    expect(result.intervals[0].id).toBe("4857895");
+  });
+
+  it("defaults averagePower and availableStreams to null/empty when absent", () => {
+    const result = normalizeActivityDetail(
+      makeRawActivity({ icu_average_watts: null, icu_weighted_avg_watts: null, stream_types: null }),
+      []
+    );
+
+    expect(result.averagePower).toBeNull();
+    expect(result.availableStreams).toEqual([]);
+    expect(result.intervals).toEqual([]);
+  });
+});
+
+function makeRawStream(type: string, data: Array<number | null>): IntervalsStream {
+  return { type, data };
+}
+
+describe("buildStreamPoints", () => {
+  it("zips index-aligned streams into per-instant points", () => {
+    const rawStreams: IntervalsStream[] = [
+      makeRawStream("time", [0, 1, 2]),
+      makeRawStream("distance", [0, 2.75, 5.57]),
+      makeRawStream("heartrate", [140, 141, 142]),
+      makeRawStream("cadence", [76, 77, 77]),
+      makeRawStream("watts", [320, 329, 337]),
+      makeRawStream("altitude", [12, 12, 11.8]),
+      makeRawStream("velocity_smooth", [2.6, 2.62, 2.65]),
+    ];
+
+    const { points, availableStreams } = buildStreamPoints(rawStreams);
+
+    expect(availableStreams).toEqual([
+      "time",
+      "distance",
+      "heartrate",
+      "cadence",
+      "watts",
+      "altitude",
+      "velocity_smooth",
+    ]);
+    expect(points).toHaveLength(3);
+    expect(points[1]).toMatchObject({
+      elapsedSeconds: 1,
+      distanceMeters: 2.75,
+      heartRate: 141,
+      cadence: 77,
+      power: 329,
+      altitude: 12,
+    });
+    // 1000 / 2.62 ≈ 381.7 s/km
+    expect(points[1].paceSecondsPerKm).toBeCloseTo(381.68, 1);
+    expect(points[1].pace).toBe("6:22/km");
+  });
+
+  it("returns null metrics for streams that are entirely missing", () => {
+    const rawStreams: IntervalsStream[] = [
+      makeRawStream("time", [0, 1, 2]),
+      makeRawStream("heartrate", [140, 141, 142]),
+    ];
+
+    const { points, availableStreams } = buildStreamPoints(rawStreams);
+
+    expect(availableStreams).toEqual(["time", "heartrate"]);
+    expect(points).toHaveLength(3);
+    for (const point of points) {
+      expect(point.distanceMeters).toBeNull();
+      expect(point.cadence).toBeNull();
+      expect(point.power).toBeNull();
+      expect(point.altitude).toBeNull();
+      expect(point.pace).toBeNull();
+    }
+  });
+
+  it("falls back to fixed_altitude when altitude is absent, and speed when velocity_smooth is absent", () => {
+    const rawStreams: IntervalsStream[] = [
+      makeRawStream("time", [0, 1]),
+      makeRawStream("fixed_altitude", [16, 16]),
+      makeRawStream("speed", [3.0, 3.1]),
+    ];
+
+    const { points } = buildStreamPoints(rawStreams);
+
+    expect(points[0].altitude).toBe(16);
+    expect(points[0].pace).not.toBeNull();
+  });
+
+  it("returns an empty result for an empty stream array", () => {
+    const { points, availableStreams } = buildStreamPoints([]);
+    expect(points).toEqual([]);
+    expect(availableStreams).toEqual([]);
+  });
+
+  it("derives the point count from the longest available stream, even without a time stream", () => {
+    const rawStreams: IntervalsStream[] = [makeRawStream("heartrate", [140, 141, 142, 143])];
+
+    const { points } = buildStreamPoints(rawStreams);
+
+    expect(points).toHaveLength(4);
+    expect(points[0].elapsedSeconds).toBeNull();
+    expect(points[2].heartRate).toBe(142);
+  });
+
+  it("guards against non-finite values inside a stream's data array", () => {
+    const rawStreams: IntervalsStream[] = [
+      makeRawStream("time", [0, 1]),
+      makeRawStream("heartrate", [140, Number.NaN]),
+    ];
+
+    const { points } = buildStreamPoints(rawStreams);
+    expect(points[1].heartRate).toBeNull();
   });
 });
