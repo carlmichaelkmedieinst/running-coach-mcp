@@ -6,7 +6,8 @@ A small, read-only [Model Context Protocol](https://modelcontextprotocol.io) (MC
 - **Milestone 2B** protected `/api/mcp` with standards-compliant OAuth via [WorkOS AuthKit](https://workos.com/authkit), so the endpoint can be safely exposed on the public internet (e.g. on Vercel) while remaining accessible to exactly one person.
 - **Milestone 3A** adds two more read-only tools, `get_run_details` and `get_run_streams`, so an AI client can drill into a single run's detected intervals and time-series data (pace, heart rate, cadence, power, elevation) for real analysis — "did I fade in the last interval?", "how did my heart rate develop?", etc.
 - **Milestone 3B** adds `get_wellness`, exposing daily recovery/physiological data (resting heart rate, HRV, sleep, weight, VO2 max, CTL/ATL training load) — athlete-level, not tied to any single activity.
-- **Milestone 3C** (this milestone) adds `get_running_progress`, descriptive weekly-volume/pace/heart-rate/training-load/VO2 max trend analysis with recent-vs-previous period comparisons — built cheaply from the existing activity list and wellness data, with no per-run detail or stream fetches.
+- **Milestone 3C** adds `get_running_progress`, descriptive weekly-volume/pace/heart-rate/training-load/VO2 max trend analysis with recent-vs-previous period comparisons — built cheaply from the existing activity list and wellness data, with no per-run detail or stream fetches.
+- **Milestone 3D** (this milestone) adds `get_calendar`, exposing recent and upcoming calendar events / planned workouts from Intervals.icu — including the next planned running workout — so an AI client can answer "what's on my schedule?" questions. Still strictly read-only: no calendar/workout creation, editing, or deletion.
 
 The server remains strictly **read-only**.
 
@@ -18,14 +19,14 @@ Garmin  →  Garmin Connect  →  Intervals.icu  →  running-coach-mcp  →  Wo
 
 - **Garmin / Garmin Connect** — the athlete's watch and activity sync source.
 - **Intervals.icu** — source of truth for activity data, synced from Garmin. Accessed read-only via HTTP Basic Auth with a personal API key.
-- **running-coach-mcp** (this app, `src/lib/intervals/*`) — a small server-only client and domain layer that fetches raw activities, activity detail + intervals, time-series streams, and daily wellness data, and converts each into our own normalized models (`src/types/activity.ts`, `src/types/interval.ts`, `src/types/stream.ts`, `src/types/wellness.ts`). `src/lib/intervals/progress.ts` builds descriptive trend analysis (`src/types/progress.ts`) on top of the same activity list + wellness data — no extra upstream endpoints, no per-run detail/stream fetches. MCP code never touches the raw Intervals.icu response shape directly.
+- **running-coach-mcp** (this app, `src/lib/intervals/*`) — a small server-only client and domain layer that fetches raw activities, activity detail + intervals, time-series streams, daily wellness data, and calendar events / planned workouts, and converts each into our own normalized models (`src/types/activity.ts`, `src/types/interval.ts`, `src/types/stream.ts`, `src/types/wellness.ts`, `src/types/calendarEvent.ts`). `src/lib/intervals/progress.ts` builds descriptive trend analysis (`src/types/progress.ts`) on top of the same activity list + wellness data — no extra upstream endpoints, no per-run detail/stream fetches. MCP code never touches the raw Intervals.icu response shape directly.
 - **WorkOS OAuth protected MCP** (`src/app/api/mcp/route.ts` + `src/lib/auth/*`) — exposes the domain layer as MCP tools over Streamable HTTP via [`mcp-handler`](https://www.npmjs.com/package/mcp-handler), gated behind OAuth bearer-token verification.
-- **ChatGPT** (or any MCP-compatible client — Claude Desktop, Cursor, MCP Inspector, etc.) — calls `get_recent_runs`, `get_run_details`, `get_run_streams`, `get_wellness`, and `get_running_progress` after completing the OAuth flow against WorkOS.
+- **ChatGPT** (or any MCP-compatible client — Claude Desktop, Cursor, MCP Inspector, etc.) — calls `get_recent_runs`, `get_run_details`, `get_run_streams`, `get_wellness`, `get_running_progress`, and `get_calendar` after completing the OAuth flow against WorkOS.
 
 ### OAuth roles
 
 - **WorkOS AuthKit is the OAuth *Authorization Server***. It authenticates the user and issues access tokens. This app never issues tokens itself and never runs its own authorization server.
-- **running-coach-mcp is the OAuth *Resource Server***. It cryptographically verifies WorkOS-issued access tokens (signature + issuer + audience, via JWKS) before allowing a request to reach any tool (`get_recent_runs`, `get_run_details`, `get_run_streams`, `get_wellness`, `get_running_progress`). The check wraps the whole `/api/mcp` handler, so every tool registered on it — including future ones — inherits the same protection automatically.
+- **running-coach-mcp is the OAuth *Resource Server***. It cryptographically verifies WorkOS-issued access tokens (signature + issuer + audience, via JWKS) before allowing a request to reach any tool (`get_recent_runs`, `get_run_details`, `get_run_streams`, `get_wellness`, `get_running_progress`, `get_calendar`). The check wraps the whole `/api/mcp` handler, so every tool registered on it — including future ones — inherits the same protection automatically.
 - **Intervals.icu credentials remain completely separate and server-only.** The Intervals.icu API key is never sent to, derived from, or exposed via WorkOS/MCP — the two auth systems never mix, and WorkOS tokens are never forwarded to Intervals.icu.
 - **Access is currently limited to a single WorkOS user.** After a token is verified, its `sub` claim is compared against `MCP_ALLOWED_USER_ID`. Any other (even otherwise valid) user is rejected with `403`. If `MCP_ALLOWED_USER_ID` isn't configured, the server fails closed and allows no one.
 
@@ -37,7 +38,7 @@ src/
       oauth-authorization-server/route.ts   # RFC 8414 metadata, proxied from WorkOS for clients that probe the MCP host directly
     api/
       health/route.ts    # GET /api/health — PUBLIC liveness + config check (no secrets, no upstream calls)
-      mcp/route.ts        # MCP endpoint (Streamable HTTP), OAuth-protected — registers all five tools
+      mcp/route.ts        # MCP endpoint (Streamable HTTP), OAuth-protected — registers all six tools
     page.tsx              # minimal info page (no UI framework needed)
 
   lib/
@@ -53,12 +54,15 @@ src/
       streams.ts            # domain layer: getRunStreams() — full stream fetch + downsampling
       wellness.ts            # domain layer: getWellness() — daily wellness fetch + latest/latest-non-null summary
       progress.ts            # domain layer: getRunningProgress() — trend analysis, built on activities.ts + wellness.ts (no new upstream calls)
+      calendar.ts            # domain layer: getCalendar() — calendar events/planned workouts fetch, normalize, classify, sort, next-planned-workout selection
       normalizers.ts        # raw Intervals.icu activity shapes -> RunningActivity / RunningInterval / stream point models
       wellnessNormalizers.ts # raw Intervals.icu wellness shape -> DailyWellness model
+      calendarEventNormalizers.ts # raw Intervals.icu event shape -> CalendarEvent model, incl. planned-workout classification
     running/
       pace.ts             # pure pace/speed calculation + formatting helpers
       downsample.ts       # pure, deterministic bucket-sampling helper (no randomness)
-      dates.ts            # pure date-only helpers (toDateOnly, daysBeforeDateOnly, isDateOnlyInRange), shared by activities/wellness/progress
+      dates.ts            # pure, timezone-aware date-only helpers (todayDateOnly, addDaysToDateOnly, isDateOnlyInRange), shared by activities/wellness/progress/calendar
+      athleteTimeZone.ts  # reads + validates ATHLETE_TIME_ZONE (defaults to Europe/Stockholm)
       progressAggregation.ts # pure aggregation rules for progress analysis (pace/HR weighting, weekly buckets, HR bands, VO2 trend, comparisons)
 
   types/
@@ -67,9 +71,10 @@ src/
     stream.ts             # IntervalsStream (raw) and RunningStreamPoint / RunningStreamsResult (our models)
     wellness.ts            # IntervalsWellnessEntry (raw) and DailyWellness / WellnessResult (our models)
     progress.ts            # normalized RunningProgressResult and its nested types (no raw upstream shape here)
+    calendarEvent.ts        # IntervalsEvent/IntervalsWorkoutDoc (raw) and CalendarEvent / CalendarResult / CalendarEventWorkout (our models)
 ```
 
-The `IntervalsClient` layer is structured so future methods (`getCalendar`, and eventually write operations) can be added without reshaping what's already here — see the comments in `src/lib/intervals/client.ts`. None of those are implemented yet.
+The `IntervalsClient` layer is structured so future methods (eventually write operations — `createWorkout`, `updateWorkout`, `deleteWorkout`) can be added without reshaping what's already here — see the comments in `src/lib/intervals/client.ts`. None of those are implemented yet.
 
 ## Environment variables
 
@@ -140,7 +145,7 @@ Inspector supports the standard OAuth discovery flow: it will read `/.well-known
 
 ## Tools
 
-All five tools are read-only, require the same WorkOS OAuth bearer token, and never expose Intervals.icu credentials or raw upstream payloads.
+All six tools are read-only, require the same WorkOS OAuth bearer token, and never expose Intervals.icu credentials or raw upstream payloads.
 
 ### `get_recent_runs`
 
@@ -283,6 +288,70 @@ Response shape:
 > - *"How has my VO2 max changed?"*
 > - *"Am I progressing toward my 10K goal?"* (the tool returns descriptive trend data only — it does not predict race times)
 
+### `get_calendar`
+
+Fetches recent and upcoming calendar events / planned workouts (`GET /athlete/{id}/events`, confirmed via live read-only discovery against a real account) for an athlete-local date window, normalizes and classifies each event, and surfaces the next planned running workout for convenience. **Strictly read-only** — this tool never creates, updates, or deletes anything in Intervals.icu.
+
+- **daysBefore** (optional integer, 0–90, default 7) — how many days before today to include.
+- **daysAfter** (optional integer, 1–180, default 21) — how many days after today to include.
+
+The date window is computed in `ATHLETE_TIME_ZONE` (see [Environment variables](#environment-variables)) via the same `todayDateOnly`/`addDaysToDateOnly` helpers used by `get_recent_runs`/`get_wellness`/`get_running_progress` — never the server's own UTC date.
+
+Response shape:
+
+```json
+{
+  "startDate": "2026-09-07",
+  "endDate": "2026-10-14",
+  "eventsReturned": 1,
+  "plannedWorkoutCount": 1,
+  "nextPlannedWorkout": null,
+  "events": [
+    {
+      "id": "133599091",
+      "date": "2026-09-05T00:00:00",
+      "name": "6 × 1 min intervals",
+      "category": "WORKOUT",
+      "sportType": "Run",
+      "eventType": "planned_running_workout",
+      "isPlannedWorkout": true,
+      "isCompleted": true,
+      "completedActivityId": "i183474786",
+      "plannedDurationSeconds": 2400,
+      "plannedDistanceMeters": 0,
+      "description": "2km lugnt. 6x1min tryck / 1min jogg / 15+10 lugnt",
+      "workout": {
+        "structureAvailable": false,
+        "stepCount": 0,
+        "description": "2km lugnt. 6x1min tryck / 1min jogg / 15+10 lugnt"
+      }
+    }
+  ]
+}
+```
+
+(The example above is real, live output from this project's own Milestone 3D smoke test — this account's only calendar event so far is a past, already-completed, free-text-only planned workout.)
+
+**Event classification** (`eventType`) is deliberately conservative, based only on raw signals actually confirmed via live discovery — see the doc comments in `src/lib/intervals/calendarEventNormalizers.ts` for the exact reasoning:
+
+- `"planned_running_workout"` — `category === "WORKOUT"` and the sport is a running type (`Run`/`TrailRun`/`VirtualRun`).
+- `"planned_workout_other_sport"` — `category === "WORKOUT"` but a non-running sport (e.g. `Ride`).
+- `"note"` — the real `show_as_note` flag is `true`.
+- `"other"` — anything else (including any `category` value other than `"WORKOUT"`, none of which this account has ever produced live). The raw `category` string is always passed through unmodified on `CalendarEvent.category` regardless, so a client can still see it even when `eventType` doesn't have a confident opinion about it.
+
+**Completion / linking**: `isCompleted` and `completedActivityId` are derived from Intervals.icu's real `paired_activity_id` field (confirmed live) — never inferred from date alone. A planned workout that's already happened and been matched to a real activity is `isCompleted: true`.
+
+**Workout structure**: kept deliberately conservative. `workout` is `{ structureAvailable, stepCount, description }` — `structureAvailable` is `true` only when the raw `workout_doc.steps` array is genuinely non-empty, `stepCount` is that array's length, and `description` is the plan's free text (`workout_doc.description`, falling back to the event's own `description`). **Structured workout step interpretation is intentionally deferred until a real populated Intervals `workout_doc.steps` response has been inspected** — no per-step fields (duration, distance, target pace/HR/power, repetitions, ...) are parsed or exposed yet, and free text is never parsed into fabricated steps. This account's only real event had `workout_doc.steps: []` (a free-text-only plan), so there has never been a populated example to normalize against; once one exists, this response can be safely extended without a breaking change (`structureAvailable`/`stepCount` will simply start reflecting real data).
+
+**`nextPlannedWorkout`** is the earliest today-or-future `"planned_running_workout"` that isn't already completed — `null` if none qualifies. It deliberately never falls back to a non-running planned workout or a random event.
+
+> Example prompts:
+> - *"What do I have planned this week?"*
+> - *"What is my next running workout?"*
+> - *"Show me Tuesday's workout."*
+> - *"Do I have a quality session planned in the next few days?"*
+> - *"Compare my upcoming training with my recent recovery."*
+
 ## Quality checks
 
 ```bash
@@ -294,13 +363,12 @@ npm run build    # production build
 
 ## Milestone status
 
-**Milestone 1** was strictly read-only with no auth. **Milestone 2B** added WorkOS OAuth protection in front of the same read-only tool. **Milestone 3A** added two more read-only tools — `get_run_details` and `get_run_streams` — for per-activity analysis. **Milestone 3B** added `get_wellness` for daily recovery/physiological data (including VO2 max). **Milestone 3C** (this milestone) adds `get_running_progress` for descriptive weekly-volume/pace/HR/training-load/VO2 max trend analysis and recent-vs-previous period comparisons — all five tools inherit the same OAuth protection unchanged. Still no database, no calendar, no automatic coaching logic, and no write operations (no `POST`/`PUT`/`PATCH`/`DELETE` calls to Intervals.icu). VO2 max is never calculated by this project — it's read verbatim from Intervals.icu's `vo2max` wellness field, which itself comes from Garmin. `get_running_progress` never predicts race times, estimates lactate threshold, calculates cardiac drift, claims training zones, or computes a proprietary fitness score.
+**Milestone 1** was strictly read-only with no auth. **Milestone 2B** added WorkOS OAuth protection in front of the same read-only tool. **Milestone 3A** added two more read-only tools — `get_run_details` and `get_run_streams` — for per-activity analysis. **Milestone 3B** added `get_wellness` for daily recovery/physiological data (including VO2 max). **Milestone 3C** added `get_running_progress` for descriptive weekly-volume/pace/HR/training-load/VO2 max trend analysis and recent-vs-previous period comparisons. **Milestone 3D** (this milestone) adds `get_calendar` for read-only calendar events / planned workouts, including the next planned running workout — all six tools inherit the same OAuth protection unchanged. Still no database, no automatic coaching logic, and no write operations (no `POST`/`PUT`/`PATCH`/`DELETE` calls to Intervals.icu — `get_calendar` never creates, updates, or deletes calendar events or workouts, and never syncs anything to Garmin). VO2 max is never calculated by this project — it's read verbatim from Intervals.icu's `vo2max` wellness field, which itself comes from Garmin. `get_running_progress` never predicts race times, estimates lactate threshold, calculates cardiac drift, claims training zones, or computes a proprietary fitness score.
 
 Future milestones will build on this foundation to add:
 
-- Calendar / planned workouts (`getCalendar`)
 - Deeper training analytics (e.g. properly-designed performance/race-time modeling, if ever added, would be its own carefully-scoped milestone — not part of this one)
-- Eventually, workout creation/editing (`createWorkout`, `updateWorkout`, `deleteWorkout`) — write access, with stronger safeguards
+- Eventually, workout creation/editing (`createWorkout`, `updateWorkout`, `deleteWorkout`) — write access, with stronger safeguards. Relevant discovery from Milestone 3D that would matter here: event ids are plain numbers (not the `"i..."` prefixed strings activities use); the read endpoint is `GET /athlete/{id}/events` (write equivalents are unconfirmed — not called in this milestone); the only real event observed used a free-text `workout_doc` (`steps: []`) rather than the structured step-builder format, so the actual populated-`steps` schema still needs to be confirmed live before any write support is built on top of it; and the confirmed `category`/`show_as_note`/`paired_activity_id` fields would likely all be relevant to a future write payload.
 
 ## Notes / assumptions
 
@@ -329,3 +397,13 @@ Future milestones will build on this foundation to add:
 - `weekly` does not manufacture zero-run weeks for gaps in training history — only weeks that actually contain at least one run appear. This was a deliberate simplicity/compactness choice (see the milestone's own design note) and is covered by a dedicated test.
 - All aggregation math (pace/HR weighting, weekly bucketing, HR banding, VO2 trend, recent-vs-previous comparison, data-sufficiency) lives in pure, independently unit-tested functions in `src/lib/running/progressAggregation.ts` — `src/lib/intervals/progress.ts` itself only handles fetching and date-window slicing.
 - **"Today" is computed in the athlete's local timezone (`ATHLETE_TIME_ZONE`, `src/lib/running/athleteTimeZone.ts`), never via a plain `new Date().toISOString()` UTC conversion.** A naive UTC conversion reports the wrong calendar date for part of every day in any non-UTC timezone (e.g. shortly after local midnight in a positive-UTC-offset zone like `Europe/Stockholm`, or shortly before local midnight in a negative-UTC-offset zone) — which would silently shift `get_recent_runs`/`get_wellness`/`get_running_progress`'s date windows by a day. `todayDateOnly(timeZone, date)` (`src/lib/running/dates.ts`) resolves this via `Intl.DateTimeFormat`; all other date-only arithmetic in this project (`addDaysToDateOnly`, weekly bucketing's Monday calculation) is pure UTC-component math on already-resolved `"YYYY-MM-DD"` strings, so it can never reintroduce this class of bug.
+
+### Design assumptions (Milestone 3D)
+
+- The calendar/planned-workout endpoint was found via live discovery, not assumed: `GET /api/v1/athlete/{id}/events?oldest=YYYY-MM-DD&newest=YYYY-MM-DD` (same base client, same auth as every other endpoint). A `/calendar` path was tried first and returned `404` — `/events` is the correct one. A single-event detail endpoint also exists (`GET /athlete/{id}/events/{id}`), but notably its response **omits** `paired_activity_id`, which the list endpoint includes — so `getCalendar` only ever uses the list endpoint.
+- This account had exactly **one** real calendar event across a 2-year discovery window (1 year back to 1 year forward): a past, already-completed, free-text-only planned running workout. `category="WORKOUT"` and the confirmed `show_as_note` boolean are the only classification signals with real evidence behind them; querying `category=NOTE` and `category=RACE_A` both returned `200 []` (accepted by the API, but with zero real examples to confirm what they actually look like for this account). Rather than hardcode meaning for category values never observed, `classifyEventType` (`src/lib/intervals/calendarEventNormalizers.ts`) only derives `"planned_running_workout"` / `"planned_workout_other_sport"` / `"note"` from confirmed signals and falls back to a neutral `"other"` — while still always passing the raw `category` string through unmodified.
+- **Completion linking is real, not inferred**: the one real event's `paired_activity_id` (`"i183474786"`) pointed at an actual completed activity with a matching name — confirming Intervals.icu really does link planned events to completed activities this way. `isCompleted`/`completedActivityId` are derived from that field only; a past event with no `paired_activity_id` is still `isCompleted: false` (never inferred from its date being in the past).
+- **`plannedDurationSeconds`/`plannedDistanceMeters` (raw `moving_time`/`distance`) have an observed dual nature**: on the one real (completed, paired) event, these matched the linked activity's actual moving time — so for an already-completed event they may reflect what happened rather than a pre-workout target. This account has no genuinely future, not-yet-completed event to confirm the field's meaning before completion; documented here rather than asserted as certain.
+- **Structured workout step interpretation is intentionally deferred until a real populated Intervals `workout_doc.steps` response has been inspected.** This account's only real event had `workout_doc.steps: []` (a free-text-only plan), and neither its calendar nor its workout library folder (`GET /athlete/{id}/folders`, confirmed to exist but empty) contained a single populated example. Rather than ship speculative per-step parsing built on an unconfirmed schema, `CalendarEventWorkout` only reports `structureAvailable` (is `steps` non-empty?), `stepCount` (`steps.length`), and `description` (free text) — no per-step fields (duration, distance, target pace/HR/power, repetitions, nested steps, ...) are modeled or exposed at all. This is a safe, additive gap: once a real populated example exists, per-step fields can be added to the response without a breaking change.
+- `nextPlannedWorkout` only ever considers `"planned_running_workout"` events, per the milestone's explicit spec — a planned strength/cycling workout never becomes `nextPlannedWorkout`, even if it's the only planned workout on the calendar (`plannedWorkoutCount` still counts it, just not as "next").
+- Calendar event ids are plain numbers in Intervals.icu's raw schema (e.g. `133599091`), unlike activity ids (`"i186254951"`); `CalendarEvent.id` stringifies them for consistency with how every other tool in this project exposes ids.

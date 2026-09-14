@@ -4,6 +4,7 @@ import { z } from "zod";
 import { withWorkosAuth } from "@/lib/auth/mcpAuth";
 import { getRunDetails } from "@/lib/intervals/activityDetails";
 import { getRecentRuns } from "@/lib/intervals/activities";
+import { getCalendar } from "@/lib/intervals/calendar";
 import { IntervalsApiError } from "@/lib/intervals/client";
 import { getRunningProgress } from "@/lib/intervals/progress";
 import { getRunStreams } from "@/lib/intervals/streams";
@@ -20,10 +21,11 @@ import { getWellness } from "@/lib/intervals/wellness";
  * `get_running_progress`, for descriptive weekly-volume/pace/HR/training-load/
  * VO2 max trends and recent-vs-previous period comparisons, built cheaply
  * from the existing activity list and wellness data (no per-run detail or
- * stream fetches). MCP-specific code here only talks to our domain layer
- * (`getRecentRuns` / `getRunDetails` / `getRunStreams` / `getWellness` /
- * `getRunningProgress`) — it never touches raw Intervals.icu response shapes
- * directly.
+ * stream fetches). Milestone 3D adds `get_calendar`, for read-only calendar
+ * events / planned workouts (still no create/update/delete). MCP-specific
+ * code here only talks to our domain layer (`getRecentRuns` / `getRunDetails`
+ * / `getRunStreams` / `getWellness` / `getRunningProgress` / `getCalendar`)
+ * — it never touches raw Intervals.icu response shapes directly.
  *
  * Milestone 2B: the endpoint is protected by WorkOS OAuth (see
  * `withWorkosAuth` / `src/lib/auth/mcpAuth.ts`). Only a request bearing a
@@ -273,6 +275,60 @@ const mcpHandler = createMcpHandler(
               {
                 type: "text" as const,
                 text: JSON.stringify(progress, null, 2),
+              },
+            ],
+          };
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Intervals.icu request failed unexpectedly.";
+
+          return {
+            isError: true,
+            content: [{ type: "text" as const, text: message }],
+          };
+        }
+      }
+    );
+
+    server.registerTool(
+      "get_calendar",
+      {
+        title: "Get calendar",
+        description:
+          "Get recent and upcoming calendar events and planned workouts from Intervals.icu. Use this to inspect scheduled training, upcoming running sessions and their workout structure.",
+        inputSchema: z.object({
+          daysBefore: z
+            .number()
+            .int()
+            .min(0)
+            .max(90)
+            .default(7)
+            .describe("How many days before today to include (0-90, default 7)."),
+          daysAfter: z
+            .number()
+            .int()
+            .min(1)
+            .max(180)
+            .default(21)
+            .describe("How many days after today to include (1-180, default 21)."),
+        }),
+        annotations: {
+          title: "Get calendar",
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
+      },
+      async ({ daysBefore, daysAfter }) => {
+        try {
+          const calendar = await getCalendar({ daysBefore, daysAfter });
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify(calendar, null, 2),
               },
             ],
           };
