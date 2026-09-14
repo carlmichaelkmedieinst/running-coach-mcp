@@ -140,8 +140,12 @@ export function normalizeActivityDetail(
   };
 }
 
-/** Returns `value` if it is a finite number, otherwise `null`. */
-function numericOrNull(value: number | null | undefined): number | null {
+/**
+ * Returns `value` if it is a finite number, otherwise `null`. Exported so
+ * other normalizer modules (e.g. wellness) can reuse the same NaN/Infinity
+ * guard instead of duplicating it.
+ */
+export function numericOrNull(value: number | null | undefined): number | null {
   if (value === null || value === undefined || !Number.isFinite(value)) {
     return null;
   }

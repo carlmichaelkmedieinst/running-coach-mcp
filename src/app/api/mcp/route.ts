@@ -6,21 +6,25 @@ import { getRunDetails } from "@/lib/intervals/activityDetails";
 import { getRecentRuns } from "@/lib/intervals/activities";
 import { IntervalsApiError } from "@/lib/intervals/client";
 import { getRunStreams } from "@/lib/intervals/streams";
+import { getWellness } from "@/lib/intervals/wellness";
 
 /**
  * MCP endpoint (Streamable HTTP transport, via `mcp-handler`).
  *
- * Milestone 1 exposes `get_recent_runs`. Milestone 3A adds two more
- * read-only tools, `get_run_details` and `get_run_streams`, for analyzing
- * one specific activity. MCP-specific code here only talks to our domain
- * layer (`getRecentRuns` / `getRunDetails` / `getRunStreams`) — it never
- * touches raw Intervals.icu response shapes directly.
+ * Milestone 1 exposes `get_recent_runs`. Milestone 3A adds `get_run_details`
+ * and `get_run_streams`, for analyzing one specific activity. Milestone 3B
+ * adds `get_wellness`, for athlete-level daily recovery data (resting heart
+ * rate, HRV, sleep, weight, VO2 max, fitnessCtl/fatigueAtl training load) —
+ * deliberately separate from any single activity. MCP-specific code here only talks to
+ * our domain layer (`getRecentRuns` / `getRunDetails` / `getRunStreams` /
+ * `getWellness`) — it never touches raw Intervals.icu response shapes
+ * directly.
  *
  * Milestone 2B: the endpoint is protected by WorkOS OAuth (see
  * `withWorkosAuth` / `src/lib/auth/mcpAuth.ts`). Only a request bearing a
  * valid, WorkOS-issued access token for the allow-listed single user ever
- * reaches this handler. All tools registered below — including the two
- * added in Milestone 3A — inherit this same protection automatically,
+ * reaches this handler. All tools registered below — including every tool
+ * added after Milestone 2B — inherit this same protection automatically,
  * since it wraps the whole handler, not individual tools.
  */
 const mcpHandler = createMcpHandler(
@@ -161,6 +165,53 @@ const mcpHandler = createMcpHandler(
               {
                 type: "text" as const,
                 text: JSON.stringify(streams, null, 2),
+              },
+            ],
+          };
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Intervals.icu request failed unexpectedly.";
+
+          return {
+            isError: true,
+            content: [{ type: "text" as const, text: message }],
+          };
+        }
+      }
+    );
+
+    server.registerTool(
+      "get_wellness",
+      {
+        title: "Get wellness",
+        description:
+          "Get recent wellness and recovery data from Intervals.icu, including VO2 max, resting heart rate, HRV, sleep, weight and other available recovery metrics. Use this for recovery assessment and physiological trends.",
+        inputSchema: z.object({
+          days: z
+            .number()
+            .int()
+            .min(7)
+            .max(365)
+            .default(30)
+            .describe("How many days back to fetch wellness data for (7-365, default 30)."),
+        }),
+        annotations: {
+          title: "Get wellness",
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
+      },
+      async ({ days }) => {
+        try {
+          const wellness = await getWellness({ days });
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify(wellness, null, 2),
               },
             ],
           };
