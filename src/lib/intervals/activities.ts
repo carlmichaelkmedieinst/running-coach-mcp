@@ -13,6 +13,8 @@ import { z } from "zod";
 import { getIntervalsAthleteId } from "@/lib/intervals/auth";
 import { intervalsGet } from "@/lib/intervals/client";
 import { isRunningActivityType, normalizeActivity } from "@/lib/intervals/normalizers";
+import { getAthleteTimeZone } from "@/lib/running/athleteTimeZone";
+import { addDaysToDateOnly, todayDateOnly } from "@/lib/running/dates";
 import type { IntervalsActivity, RunningActivity } from "@/types/activity";
 
 /**
@@ -24,16 +26,19 @@ import type { IntervalsActivity, RunningActivity } from "@/types/activity";
  */
 const MAX_ACTIVITIES_TO_FETCH = 100;
 
+/**
+ * Upper bound used by `getRunningActivitiesInRange` when called for
+ * Milestone 3C's progress analysis, which can span up to a year. Still a
+ * single Intervals.icu request — just asking for more rows.
+ */
+export const MAX_ACTIVITIES_FOR_PROGRESS = 500;
+
 export const getRecentRunsParamsSchema = z.object({
   limit: z.number().int().min(1).max(20).default(5),
   days: z.number().int().min(7).max(365).default(90),
 });
 
 export type GetRecentRunsParams = z.input<typeof getRecentRunsParamsSchema>;
-
-function toDateOnly(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
 
 /**
  * Fetches raw activities for the configured athlete within a date range.
@@ -62,6 +67,41 @@ async function fetchRawActivities(params: {
 }
 
 /**
+ * Returns ALL normalized running activities (Run, TrailRun, VirtualRun)
+ * within the last `days` days, newest first — no result-count limit.
+ *
+ * Shared by `getRecentRuns` (Milestone 1) and `getRunningProgress`
+ * (Milestone 3C) so both stay consistent and neither duplicates the
+ * fetch/filter/normalize/sort logic. `getRecentRuns` still limits how many
+ * raw rows it *asks Intervals.icu for*; callers needing a full year of
+ * history (like progress analysis) can raise `fetchLimit` — it's always a
+ * single Intervals.icu request, never N+1.
+ *
+ * @param days - How many days back to search for activities.
+ * @param fetchLimit - Max raw activities to request from Intervals.icu
+ * (over-fetched since the athlete may have non-running activities mixed
+ * in). Defaults to `MAX_ACTIVITIES_TO_FETCH`.
+ */
+export async function getRunningActivitiesInRange(params: {
+  days: number;
+  fetchLimit?: number;
+}): Promise<RunningActivity[]> {
+  const { days, fetchLimit = MAX_ACTIVITIES_TO_FETCH } = params;
+
+  // "Today" must be the athlete's local calendar date, not the server's
+  // timezone and not UTC — see `todayDateOnly`'s doc comment.
+  const newest = todayDateOnly(getAthleteTimeZone());
+  const oldest = addDaysToDateOnly(newest, -days);
+
+  const rawActivities = await fetchRawActivities({ oldest, newest, limit: fetchLimit });
+
+  return rawActivities
+    .filter((activity) => isRunningActivityType(activity.type))
+    .map(normalizeActivity)
+    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+}
+
+/**
  * Returns the athlete's most recent running activities (Run, TrailRun,
  * VirtualRun), newest first, normalized into our `RunningActivity` shape.
  *
@@ -73,20 +113,7 @@ async function fetchRawActivities(params: {
 export async function getRecentRuns(params: GetRecentRunsParams = {}): Promise<RunningActivity[]> {
   const { limit, days } = getRecentRunsParamsSchema.parse(params);
 
-  const newest = new Date();
-  const oldest = new Date(newest);
-  oldest.setDate(oldest.getDate() - days);
-
-  const rawActivities = await fetchRawActivities({
-    oldest: toDateOnly(oldest),
-    newest: toDateOnly(newest),
-    limit: MAX_ACTIVITIES_TO_FETCH,
-  });
-
-  const runs = rawActivities
-    .filter((activity) => isRunningActivityType(activity.type))
-    .map(normalizeActivity)
-    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  const runs = await getRunningActivitiesInRange({ days, fetchLimit: MAX_ACTIVITIES_TO_FETCH });
 
   return runs.slice(0, limit);
 }

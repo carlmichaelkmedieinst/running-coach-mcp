@@ -5,6 +5,7 @@ import { withWorkosAuth } from "@/lib/auth/mcpAuth";
 import { getRunDetails } from "@/lib/intervals/activityDetails";
 import { getRecentRuns } from "@/lib/intervals/activities";
 import { IntervalsApiError } from "@/lib/intervals/client";
+import { getRunningProgress } from "@/lib/intervals/progress";
 import { getRunStreams } from "@/lib/intervals/streams";
 import { getWellness } from "@/lib/intervals/wellness";
 
@@ -15,9 +16,13 @@ import { getWellness } from "@/lib/intervals/wellness";
  * and `get_run_streams`, for analyzing one specific activity. Milestone 3B
  * adds `get_wellness`, for athlete-level daily recovery data (resting heart
  * rate, HRV, sleep, weight, VO2 max, fitnessCtl/fatigueAtl training load) —
- * deliberately separate from any single activity. MCP-specific code here only talks to
- * our domain layer (`getRecentRuns` / `getRunDetails` / `getRunStreams` /
- * `getWellness`) — it never touches raw Intervals.icu response shapes
+ * deliberately separate from any single activity. Milestone 3C adds
+ * `get_running_progress`, for descriptive weekly-volume/pace/HR/training-load/
+ * VO2 max trends and recent-vs-previous period comparisons, built cheaply
+ * from the existing activity list and wellness data (no per-run detail or
+ * stream fetches). MCP-specific code here only talks to our domain layer
+ * (`getRecentRuns` / `getRunDetails` / `getRunStreams` / `getWellness` /
+ * `getRunningProgress`) — it never touches raw Intervals.icu response shapes
  * directly.
  *
  * Milestone 2B: the endpoint is protected by WorkOS OAuth (see
@@ -212,6 +217,62 @@ const mcpHandler = createMcpHandler(
               {
                 type: "text" as const,
                 text: JSON.stringify(wellness, null, 2),
+              },
+            ],
+          };
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Intervals.icu request failed unexpectedly.";
+
+          return {
+            isError: true,
+            content: [{ type: "text" as const, text: message }],
+          };
+        }
+      }
+    );
+
+    server.registerTool(
+      "get_running_progress",
+      {
+        title: "Get running progress",
+        description:
+          "Analyze running progress and trends over time using recent running activities and wellness data. Includes weekly volume, pace, heart rate, training load, VO2 max trends and recent-vs-previous period comparisons.",
+        inputSchema: z.object({
+          days: z
+            .number()
+            .int()
+            .min(14)
+            .max(365)
+            .default(90)
+            .describe("Overall analysis window in days (14-365, default 90)."),
+          comparisonDays: z
+            .number()
+            .int()
+            .min(7)
+            .max(56)
+            .default(14)
+            .describe(
+              "Length of the recent-vs-previous comparison windows in days (7-56, default 14). recentPeriod is the last comparisonDays days; previousPeriod is the comparisonDays days immediately before that."
+            ),
+        }),
+        annotations: {
+          title: "Get running progress",
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
+      },
+      async ({ days, comparisonDays }) => {
+        try {
+          const progress = await getRunningProgress({ days, comparisonDays });
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify(progress, null, 2),
               },
             ],
           };
