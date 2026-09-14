@@ -9,6 +9,14 @@ import { IntervalsApiError } from "@/lib/intervals/client";
 import { getRunningProgress } from "@/lib/intervals/progress";
 import { getRunStreams } from "@/lib/intervals/streams";
 import { getWellness } from "@/lib/intervals/wellness";
+import {
+  createRunningWorkout,
+  deleteRunningWorkout,
+  describeWorkoutError,
+  eventIdSchema,
+  updateRunningWorkout,
+} from "@/lib/intervals/workouts";
+import { runningWorkoutInputSchema } from "@/lib/running/workoutInput";
 
 /**
  * MCP endpoint (Streamable HTTP transport, via `mcp-handler`).
@@ -22,9 +30,16 @@ import { getWellness } from "@/lib/intervals/wellness";
  * VO2 max trends and recent-vs-previous period comparisons, built cheaply
  * from the existing activity list and wellness data (no per-run detail or
  * stream fetches). Milestone 3D adds `get_calendar`, for read-only calendar
- * events / planned workouts (still no create/update/delete). MCP-specific
- * code here only talks to our domain layer (`getRecentRuns` / `getRunDetails`
- * / `getRunStreams` / `getWellness` / `getRunningProgress` / `getCalendar`)
+ * events / planned workouts (still no create/update/delete). Milestone 3E
+ * adds the first WRITE tools — `create_running_workout`,
+ * `update_running_workout`, `delete_running_workout` — which modify the
+ * athlete's Intervals.icu calendar. They write native Intervals.icu
+ * workout-builder TEXT (never a hand-built `workout_doc`) via
+ * `src/lib/intervals/workouts.ts`; see that module's doc comment. Every
+ * other tool remains strictly read-only. MCP-specific code here only
+ * talks to our domain layer (`getRecentRuns` / `getRunDetails` /
+ * `getRunStreams` / `getWellness` / `getRunningProgress` / `getCalendar` /
+ * `createRunningWorkout` / `updateRunningWorkout` / `deleteRunningWorkout`)
  * — it never touches raw Intervals.icu response shapes directly.
  *
  * Milestone 2B: the endpoint is protected by WorkOS OAuth (see
@@ -339,6 +354,122 @@ const mcpHandler = createMcpHandler(
           return {
             isError: true,
             content: [{ type: "text" as const, text: message }],
+          };
+        }
+      }
+    );
+
+    // ------------------------------------------------------------------
+    // Milestone 3E: WRITE tools. Every tool below MODIFIES the athlete's
+    // Intervals.icu calendar. Descriptions are deliberately explicit
+    // about this and about when calling them is (and isn't) authorized —
+    // see `src/lib/intervals/workouts.ts`'s doc comment for the
+    // safety/validation behavior behind each one.
+    // ------------------------------------------------------------------
+
+    server.registerTool(
+      "create_running_workout",
+      {
+        title: "Create running workout",
+        description:
+          "MODIFIES THE ATHLETE'S CALENDAR: creates a new planned running workout on Intervals.icu. Only call this when the user has explicitly asked to schedule/create/add a workout to their calendar (e.g. \"Create Tuesday's workout in my calendar\"). Do NOT call this just because the user asked for training advice or what to run (e.g. \"What should I run Tuesday?\") — that is coaching, not authorization to write to the calendar. The workout is described using Intervals.icu's native workout-builder text syntax, which Intervals.icu itself compiles into a structured, device-syncable workout — this tool never writes workout_doc directly. V1 supports an optional warmup, N repeated work/recovery intervals (work interval may carry an optional absolute pace range target), and an optional cooldown — all time-based only (no distance-based steps, HR/power targets, or pace zones yet).",
+        inputSchema: runningWorkoutInputSchema,
+        annotations: {
+          title: "Create running workout",
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
+      },
+      async (input) => {
+        try {
+          const created = await createRunningWorkout(input);
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify(created, null, 2),
+              },
+            ],
+          };
+        } catch (error) {
+          return {
+            isError: true,
+            content: [{ type: "text" as const, text: describeWorkoutError(error) }],
+          };
+        }
+      }
+    );
+
+    server.registerTool(
+      "update_running_workout",
+      {
+        title: "Update running workout",
+        description:
+          "MODIFIES THE ATHLETE'S CALENDAR: replaces an existing planned running workout's date/name/structure on Intervals.icu. Only call this when the user has explicitly asked to change/move/modify a specific scheduled workout (e.g. \"Move workout 133599091 to Wednesday\"). Do NOT call this for general training advice. Before writing, this fetches the existing event and refuses to proceed if it isn't a not-yet-completed planned running workout (wrong category, wrong sport, or already completed/linked to a real activity). The full workout must be re-specified (this is a complete replacement, not a partial patch) using the same fields as create_running_workout.",
+        inputSchema: runningWorkoutInputSchema.extend({ eventId: eventIdSchema }),
+        annotations: {
+          title: "Update running workout",
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
+      },
+      async (input) => {
+        try {
+          const updated = await updateRunningWorkout(input);
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify(updated, null, 2),
+              },
+            ],
+          };
+        } catch (error) {
+          return {
+            isError: true,
+            content: [{ type: "text" as const, text: describeWorkoutError(error) }],
+          };
+        }
+      }
+    );
+
+    server.registerTool(
+      "delete_running_workout",
+      {
+        title: "Delete running workout",
+        description:
+          "MODIFIES THE ATHLETE'S CALENDAR: permanently deletes a planned running workout from Intervals.icu. Only call this when the user has explicitly asked to delete/remove/cancel a specific scheduled workout (e.g. \"Delete workout 133599091\"). Do NOT call this for general training advice. Before deleting, this fetches the existing event and refuses to proceed if it isn't a not-yet-completed planned running workout (wrong category, wrong sport, or already completed/linked to a real activity).",
+        inputSchema: z.object({ eventId: eventIdSchema }),
+        annotations: {
+          title: "Delete running workout",
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
+      },
+      async ({ eventId }) => {
+        try {
+          const result = await deleteRunningWorkout({ eventId });
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify(result, null, 2),
+              },
+            ],
+          };
+        } catch (error) {
+          return {
+            isError: true,
+            content: [{ type: "text" as const, text: describeWorkoutError(error) }],
           };
         }
       }

@@ -55,3 +55,25 @@ export function addDaysToDateOnly(dateOnly: string, deltaDays: number): string {
 export function isDateOnlyInRange(dateOnly: string, startDate: string, endDate: string): boolean {
   return dateOnly >= startDate && dateOnly <= endDate;
 }
+
+/**
+ * Whether `value` is a genuinely valid `"YYYY-MM-DD"` calendar date —
+ * correct format AND a real date (e.g. `"2026-02-30"` is rejected, not
+ * silently normalized to March 2nd). Used by write-path input validation
+ * (Milestone 3E's `RunningWorkoutInput.date`) where an invalid date must
+ * be rejected with a clear error rather than accidentally scheduling a
+ * workout on the wrong day.
+ */
+export function isValidDateOnly(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+
+  // `Date.UTC` silently rolls over out-of-range components (e.g. month 13
+  // becomes January of the next year); comparing the parsed components
+  // back against the input is what actually catches that.
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
