@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { addDaysToDateOnly, isDateOnlyInRange, todayDateOnly } from "./dates";
+import { addDaysToDateOnly, isDateOnlyInRange, isValidDateOnly, todayDateOnly } from "./dates";
 
 describe("todayDateOnly", () => {
   it("returns the correct Europe/Stockholm local date shortly after local midnight, even though UTC is still the previous day", () => {
@@ -67,5 +67,34 @@ describe("isDateOnlyInRange", () => {
   it("returns false for dates outside the range", () => {
     expect(isDateOnlyInRange("2026-08-31", "2026-09-01", "2026-09-14")).toBe(false);
     expect(isDateOnlyInRange("2026-09-15", "2026-09-01", "2026-09-14")).toBe(false);
+  });
+});
+
+describe("isValidDateOnly", () => {
+  it("accepts a genuinely valid date", () => {
+    expect(isValidDateOnly("2026-09-14")).toBe(true);
+  });
+
+  it("accepts a leap day in a leap year", () => {
+    expect(isValidDateOnly("2028-02-29")).toBe(true);
+  });
+
+  it("rejects a non-leap-year February 29th (rolled over, not an error, by plain Date math)", () => {
+    expect(isValidDateOnly("2026-02-29")).toBe(false);
+  });
+
+  it("rejects an out-of-range day/month that Date would otherwise silently roll over", () => {
+    expect(isValidDateOnly("2026-02-30")).toBe(false);
+    expect(isValidDateOnly("2026-13-01")).toBe(false);
+    expect(isValidDateOnly("2026-00-01")).toBe(false);
+    expect(isValidDateOnly("2026-01-00")).toBe(false);
+  });
+
+  it("rejects malformed strings", () => {
+    expect(isValidDateOnly("2026-9-14")).toBe(false);
+    expect(isValidDateOnly("09/14/2026")).toBe(false);
+    expect(isValidDateOnly("2026-09-14T00:00:00")).toBe(false);
+    expect(isValidDateOnly("")).toBe(false);
+    expect(isValidDateOnly("not-a-date")).toBe(false);
   });
 });
