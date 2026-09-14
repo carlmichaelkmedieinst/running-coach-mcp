@@ -13,6 +13,8 @@ import { z } from "zod";
 import { getIntervalsAthleteId } from "@/lib/intervals/auth";
 import { intervalsGet } from "@/lib/intervals/client";
 import { normalizeWellnessEntry } from "@/lib/intervals/wellnessNormalizers";
+import { getAthleteTimeZone } from "@/lib/running/athleteTimeZone";
+import { addDaysToDateOnly, todayDateOnly } from "@/lib/running/dates";
 import type {
   DailyWellness,
   IntervalsWellnessEntry,
@@ -25,10 +27,6 @@ export const getWellnessParamsSchema = z.object({
 });
 
 export type GetWellnessParams = z.input<typeof getWellnessParamsSchema>;
-
-function toDateOnly(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
 
 /**
  * Fetches raw wellness entries for the configured athlete within a date
@@ -80,11 +78,12 @@ function findLatestNonNull(
 export async function getWellness(params: GetWellnessParams = {}): Promise<WellnessResult> {
   const { days } = getWellnessParamsSchema.parse(params);
 
-  const newest = new Date();
-  const oldest = new Date(newest);
-  oldest.setDate(oldest.getDate() - days);
+  // "Today" must be the athlete's local calendar date, not the server's
+  // timezone and not UTC — see `todayDateOnly`'s doc comment.
+  const newest = todayDateOnly(getAthleteTimeZone());
+  const oldest = addDaysToDateOnly(newest, -days);
 
-  const rawEntries = await fetchRawWellness(toDateOnly(oldest), toDateOnly(newest));
+  const rawEntries = await fetchRawWellness(oldest, newest);
 
   const normalizedDays = rawEntries
     .map(normalizeWellnessEntry)
